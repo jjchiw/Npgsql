@@ -3645,5 +3645,178 @@ namespace NpgsqlTests
                 Assert.AreEqual(1, command.ExecuteScalar());
             }
         }
+        
+        private void BuildFullTextSearchTableTest()
+        {
+        	ExecuteNonQuery(@"  -- Table: posts
+                                DROP TABLE IF EXISTS posts cascade;
+
+                                CREATE TABLE posts
+                                (
+                                    id serial NOT NULL,
+                                    title character varying,
+                                    body character varying,
+                                    user_name character varying,
+                                    search_vector tsvector,
+                                    CONSTRAINT posts_pkey PRIMARY KEY (id)
+                                )
+                                WITH (
+                                    OIDS=FALSE
+                                );
+
+                                -- Index: posts_search_idx
+
+                                -- DROP INDEX posts_search_idx;
+
+                                CREATE INDEX posts_search_idx
+                                ON posts USING gin (search_vector);
+
+                                -- Trigger: posts_vector_update on posts
+
+                                -- DROP TRIGGER posts_vector_update ON posts;
+
+                                CREATE TRIGGER posts_vector_update
+                                BEFORE INSERT OR UPDATE ON posts
+                                FOR EACH ROW
+                                    EXECUTE PROCEDURE tsvector_update_trigger('search_vector', 'pg_catalog.english', 'title', 'body');
+                            ");
+
+            ExecuteNonQuery("INSERT INTO posts (title, body, user_name) VALUES ('Postgres is awesome', '', 'Clark Kent')");
+            ExecuteNonQuery("INSERT INTO posts (title, body, user_name) VALUES ('How postgres is differente from MySQL', '', 'Lois Lane')");
+            ExecuteNonQuery("INSERT INTO posts (title, body, user_name) VALUES ('Tips for Mysql', '', 'Bruce Wayne')");
+            ExecuteNonQuery("INSERT INTO posts (title, body, user_name) VALUES ('SECRET', 'Postgres for the win', 'Dick Grayson')");
+            ExecuteNonQuery("INSERT INTO posts (title, body, user_name) VALUES ('Oracle acquires some other database', 'Mysql but no postgres' , 'Oliver Queen')");
+            ExecuteNonQuery("INSERT INTO posts (title, body, user_name) VALUES ('No Database', 'Nothing to see here', 'Kyle Ryner')");
+        }
+        
+        [Test]
+        public void TestFullTextSearchSimpleTest()
+        {
+        	BuildFullTextSearchTableTest();
+        	
+            var query = @"select * 
+                          from posts 
+                          where search_vector @@ to_tsquery('english', :param)
+                          order by ts_rank_cd(search_vector, to_tsquery('english', :param)) desc";
+            
+            using (var command = new NpgsqlCommand(query, Conn))
+            {
+                var sqlParam = command.CreateParameter();
+                sqlParam.ParameterName = "param";
+                sqlParam.Value = "postgres";
+                //sqlParam.DbType = DbType.Object;
+                command.Parameters.Add(sqlParam);
+                var dr = command.ExecuteReader();
+                int i = 0;
+                while (dr.Read())
+                    i++;
+                Assert.AreEqual(4, i);
+            }
+        }
+        
+        [Test]
+        public void TestFullTextSearchAnd()
+        {
+        	
+        	BuildFullTextSearchTableTest();
+        	
+            var query = @"select * 
+                              from posts 
+                              where search_vector @@ to_tsquery('english', :param)
+                              order by ts_rank_cd(search_vector, to_tsquery('english', :param)) desc";
+            
+            using (var command = new NpgsqlCommand(query, Conn))
+            {
+                var sqlParam = command.CreateParameter();
+                sqlParam.ParameterName = "param";
+                sqlParam.Value = "postgres & mysql";
+                //sqlParam.DbType = DbType.Object;
+                command.Parameters.Add(sqlParam);
+                var dr = command.ExecuteReader();
+                int i = 0;
+                while (dr.Read())
+                    i++;
+                Assert.AreEqual(2, i);
+            }
+        }
+
+        [Test]
+        public void TestFullTextSearchOr()
+        {
+        	BuildFullTextSearchTableTest();
+        	
+             var query = @"select * 
+                              from posts 
+                              where search_vector @@ to_tsquery('english', :param)
+                              order by ts_rank_cd(search_vector, to_tsquery('english', :param)) desc";
+            
+            using (var command = new NpgsqlCommand(query, Conn))
+            {
+                var sqlParam = command.CreateParameter();
+                sqlParam.ParameterName = "param";
+                sqlParam.Value = "postgres | mysql";
+                //sqlParam.DbType = DbType.Object;
+                command.Parameters.Add(sqlParam);
+                var dr = command.ExecuteReader();
+                int i = 0;
+                while (dr.Read())
+                    i++;
+                Assert.AreEqual(5, i);
+            }
+        }
+
+        [Test]
+        public void TestTsQueryContainsAnother()
+        {
+            var query = @"select 'cat'::tsquery @> :param::tsquery";
+            
+            using (var command = new NpgsqlCommand(query, Conn))
+            {
+                var sqlParam = command.CreateParameter();
+                sqlParam.ParameterName = "param";
+                sqlParam.Value = "cat & rat";
+                //sqlParam.DbType = DbType.Object;
+                command.Parameters.Add(sqlParam);
+                var dr = command.ExecuteReader();
+                int i = 0;
+                var result = true;
+                while (dr.Read())
+                {
+                    result = Convert.ToBoolean(dr[0]);
+                    i++;
+                }
+                    
+                Assert.AreEqual(1, i);
+                Assert.IsFalse(result);
+            }
+            
+        }
+
+        [Test]
+        public void TestTsQueryIsContainedIn()
+        {
+            var query = @"select 'cat'::tsquery <@ :param::tsquery";
+
+            using (var command = new NpgsqlCommand(query, Conn))
+            {
+                var sqlParam = command.CreateParameter();
+                sqlParam.ParameterName = "param";
+                sqlParam.Value = "cat & rat";
+                //sqlParam.DbType = DbType.Object;
+                command.Parameters.Add(sqlParam);
+                var dr = command.ExecuteReader();
+                int i = 0;
+                var result = false;
+                while (dr.Read())
+                {
+                    result = Convert.ToBoolean(dr[0]);
+                    i++;
+                }
+
+                Assert.AreEqual(1, i);
+                Assert.IsTrue(result);
+            }
+
+        }
     }
 }
